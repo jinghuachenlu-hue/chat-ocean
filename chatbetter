@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Discord-Style Chat with Admins</title>
+<style>
+body {margin:0; font-family:Arial; background:#313338; color:white; display:flex; height:100vh;}
+#loginScreen {margin:auto; text-align:center; width:300px; background:#2b2d31; padding:30px; border-radius:10px; display:flex; flex-direction:column; gap:10px;}
+#loginScreen input {padding:10px; border:none; border-radius:5px; background:#1e1f22; color:white;}
+#loginScreen button {padding:10px; border:none; border-radius:5px; background:#5865f2; color:white; cursor:pointer;}
+#chatScreen {display:none; flex:1; width:100%; display:flex;}
+#sidebar {width:220px; background:#2b2d31; padding:15px; display:flex; flex-direction:column; gap:10px;}
+#chatArea {flex:1; display:flex; flex-direction:column;}
+#messages {flex:1; overflow-y:auto; padding:20px;}
+.message {margin-bottom:10px;}
+.username {color:#5865f2; font-weight:bold;}
+#inputBar {display:flex; padding:10px; background:#383a40;}
+#inputBar input {flex:1; padding:10px; background:#1e1f22; border:none; color:white; border-radius:3px;}
+#inputBar button {margin-left:10px; padding:10px; background:#5865f2; border:none; color:white; cursor:pointer; border-radius:3px;}
+#usersOnline {margin-top:20px; font-size:14px;}
+#adminPanel {margin-top:20px; background:#1e1f22; padding:10px; border-radius:5px; display:none;}
+.userItem {display:flex; justify-content:space-between; margin-bottom:5px;}
+.userItem button {background:#5865f2; border:none; color:white; border-radius:3px; cursor:pointer; padding:2px 5px;}
+</style>
+</head>
+<body>
+
+<!-- Login Screen -->
+<div id="loginScreen">
+<h2>Enter Your Name</h2>
+<input id="firstName" placeholder="First Name">
+<input id="lastName" placeholder="Last Name (Optional)">
+<button onclick="login()">Enter Chat</button>
+<p id="loginError" style="color:red;"></p>
+</div>
+
+<!-- Chat Screen -->
+<div id="chatScreen">
+<div id="sidebar">
+<h3>Discord Chat</h3>
+<p id="userDisplay"></p>
+<button onclick="logout()">Logout</button>
+<div id="usersOnline"><strong>Online Users:</strong></div>
+<div id="adminPanel"><strong>Admin Panel</strong><div id="pendingUsers"></div></div>
+</div>
+
+<div id="chatArea">
+<div id="messages"></div>
+<div id="inputBar">
+<input id="messageInput" placeholder="Type a message">
+<button onclick="sendMessage()">Send</button>
+</div>
+</div>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, doc, setDoc, getDoc, updateDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyCmCYWwuIBqpoXjx7CsdAvTd6j7GukG4zA",
+  authDomain: "chat-e7ede.firebaseapp.com",
+  projectId: "chat-e7ede",
+  storageBucket: "chat-e7ede.firebasestorage.app",
+  messagingSenderId: "261404204759",
+  appId: "1:261404204759:web:091845f91490d7ec735a92",
+  measurementId: "G-S9S3F10VHR"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+
+let currentUser = null;
+
+// ----- Login Function -----
+window.login = async function() {
+    const first = document.getElementById("firstName").value.trim();
+    const last = document.getElementById("lastName").value.trim();
+    if(!first) {document.getElementById("loginError").innerText = "First name required"; return;}
+    const username = last ? `${first} ${last}` : first;
+
+    // Check if username exists
+    const usersSnap = await getDoc(doc(db, "usernames", username.toLowerCase()));
+    if(usersSnap.exists()) {
+        document.getElementById("loginError").innerText = "Username already taken";
+        return;
+    }
+
+    // Create unique ID and save username
+    let id = localStorage.getItem("userId");
+    if(!id) {
+        id = "user_" + Date.now() + "_" + Math.floor(Math.random()*1000);
+        localStorage.setItem("userId", id);
+    }
+
+    currentUser = {id, username, verified:false, online:true};
+    await setDoc(doc(db,"users",id), currentUser);
+    await setDoc(doc(db,"usernames", username.toLowerCase()), {id}); // reserve username
+
+    // Admin panel for Michael or Ethan
+    if(["michael","ethan"].includes(username.toLowerCase())) {
+        document.getElementById("adminPanel").style.display = "block";
+    }
+
+    document.getElementById("loginScreen").style.display = "none";
+    document.getElementById("chatScreen").style.display = "flex";
+    document.getElementById("userDisplay").innerText = username;
+
+    loadUsersOnline();
+    loadMessages();
+}
+
+// ----- Logout -----
+window.logout = async function() {
+    if(currentUser) {
+        await updateDoc(doc(db,"users",currentUser.id), {online:false});
+    }
+    localStorage.removeItem("userId");
+    location.reload();
+}
+
+// ----- Keep logged in -----
+window.onload = async function() {
+    const id = localStorage.getItem("userId");
+    if(id) {
+        const userSnap = await getDoc(doc(db,"users",id));
+        if(userSnap.exists()) {
+            currentUser = userSnap.data();
+            currentUser.id = id;
+            document.getElementById("loginScreen").style.display = "none";
+            document.getElementById("chatScreen").style.display = "flex";
+            document.getElementById("userDisplay").innerText = currentUser.username;
+
+            // Admin panel for Michael or Ethan
+            if(["michael","ethan"].includes(currentUser.username.toLowerCase())) {
+                document.getElementById("adminPanel").style.display = "block";
+            }
+
+            loadUsersOnline();
+            loadMessages();
+        }
+    }
+}
+
+// ----- Chat Functions -----
+window.sendMessage = async function() {
+    if(!currentUser.verified) {alert("You are not verified by admin!"); return;}
+    const text = document.getElementById("messageInput").value.trim();
+    if(!text) return;
+    await addDoc(collection(db,"messages"), {user:currentUser.username,text,time:Date.now()});
+    document.getElementById("messageInput").value="";
+}
+
+function loadMessages() {
+    const q = query(collection(db,"messages"),orderBy("time"));
+    onSnapshot(q,(snapshot)=>{
+        const messagesDiv = document.getElementById("messages");
+        messagesDiv.innerHTML="";
+        snapshot.forEach(doc=>{
+            const m = doc.data();
+            const msgEl = document.createElement("div");
+            msgEl.classList.add("message");
+            msgEl.innerHTML = `<span class="username">${m.user}</span>: ${m.text}`;
+            messagesDiv.appendChild(msgEl);
+        });
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    });
+}
+
+// ----- Online Users -----
+function loadUsersOnline() {
+    const q = query(collection(db,"users"));
+    onSnapshot(q,(snapshot)=>{
+        const usersDiv = document.getElementById("usersOnline");
+        usersDiv.innerHTML="<strong>Online Users:</strong><br>";
+        const pendingDiv = document.getElementById("pendingUsers");
+        pendingDiv.innerHTML="";
+        snapshot.forEach(doc=>{
+            const u = doc.data();
+            if(u.online) usersDiv.innerHTML += u.username + "<br>";
+            // Admin panel: show unverified users
+            if(currentUser && ["michael","ethan"].includes(currentUser.username.toLowerCase()) && !u.verified) {
+                const userEl = document.createElement("div");
+                userEl.classList.add("userItem");
+                userEl.innerHTML = `<span>${u.username}</span> <button onclick="verifyUser('${u.id}')">Verify</button>`;
+                pendingDiv.appendChild(userEl);
+            }
+        });
+    });
+}
+
+// ----- Admin Verify -----
+window.verifyUser = async function(id) {
+    await updateDoc(doc(db,"users",id), {verified:true});
+    alert("User verified!");
+}
+</script>
+</body>
+</html>
